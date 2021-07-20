@@ -1,0 +1,8 @@
+node_modules
+
+.secret
+
+#Hardhat files
+cache
+artifacts
+abi
