@@ -177,7 +177,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         }
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 irisReward = multiplier.mul(irisPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-        iris.mint(devAddress, irisReward.div(10));
+        iris.mint(devAddress, irisReward.div(5));
         iris.mint(address(this), irisReward);
         pool.accIrisPerShare = pool.accIrisPerShare.add(irisReward.mul(1e18).div(lpSupply));
         pool.lastRewardBlock = block.number;
