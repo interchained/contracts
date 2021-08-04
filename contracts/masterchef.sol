@@ -114,7 +114,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     // Add a new lp to the pool. Can only be called by the owner.
     function add(uint256 _allocPoint, IERC20 _lpToken, uint16 _depositFeeBP) external onlyOwner nonDuplicated(_lpToken) {
-        require(_depositFeeBP <= 5000, "add: invalid deposit fee basis points");
+        require(_depositFeeBP <= 500, "add: invalid deposit fee basis points");
         uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
         totalAllocPoint = totalAllocPoint.add(_allocPoint);
         poolExistence[_lpToken] = true;
@@ -129,7 +129,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     // Update the given pool's IRIS allocation point and deposit fee. Can only be called by the owner.
     function set(uint256 _pid, uint256 _allocPoint, uint16 _depositFeeBP) external onlyOwner {
-        require(_depositFeeBP <= 5000, "set: invalid deposit fee basis points");
+        require(_depositFeeBP <= 500, "set: invalid deposit fee basis points");
         totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
         poolInfo[_pid].allocPoint = _allocPoint;
         poolInfo[_pid].depositFeeBP = _depositFeeBP;
