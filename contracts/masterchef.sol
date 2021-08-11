@@ -51,6 +51,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         uint256 lastRewardBlock;  // Last block number that IRISes distribution occurs.
         uint256 accIrisPerShare;   // Accumulated IRISes per share, times 1e18. See below.
         uint16 depositFeeBP;      // Deposit fee in basis points
+	uint256 lpSupply; 
     }
 
     // The IRIS TOKEN!
@@ -77,6 +78,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
     uint16 public referralCommissionRate = 200;
     // Max referral commission rate: 5%.
     uint16 public constant MAXIMUM_REFERRAL_COMMISSION_RATE = 500;
+    uint256 public constant MAXIMUM_EMISSION_RATE = 1 ether;
+
+    bool updateReferralAddress = false;
 
     event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
@@ -86,7 +90,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
     event SetReferralAddress(address indexed user, IReferral indexed newAddress);
     event UpdateEmissionRate(address indexed user, uint256 irisPerBlock);
     event ReferralCommissionPaid(address indexed user, address indexed referrer, uint256 commissionAmount);
-
+    event PoolAdd(address indexed user, IERC20 lpToken, uint256 allocPoint, uint256 lastRewardBlock, uint16 depositFeeBP);
+    event PoolSet(address indexed user, IERC20 lpToken, uint256 allocPoint, uint256 lastRewardBlock, uint16 depositFeeBP);
+    event SetReferralCommissionRate(address indexed user, uint16 referralCommmissionRate);
+    event UpdateStartBlock(address indexed user, uint256 startBlock);
     constructor(
         IrisToken _iris,
         uint256 _startBlock,
@@ -114,6 +121,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     // Add a new lp to the pool. Can only be called by the owner.
     function add(uint256 _allocPoint, IERC20 _lpToken, uint16 _depositFeeBP) external onlyOwner nonDuplicated(_lpToken) {
+	_lpToken.balanceOf(address(this));
         require(_depositFeeBP <= 500, "add: invalid deposit fee basis points");
         uint256 lastRewardBlock = block.number > startBlock ? block.number : startBlock;
         totalAllocPoint = totalAllocPoint.add(_allocPoint);
@@ -123,8 +131,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
             allocPoint: _allocPoint,
             lastRewardBlock: lastRewardBlock,
             accIrisPerShare: 0,
-            depositFeeBP: _depositFeeBP
+            depositFeeBP: _depositFeeBP,
+	    lpSupply: 0
         }));
+	emit PoolAdd(msg.sender, _lpToken, _allocPoint,lastRewardBlock,_depositFeeBP);
     }
 
     // Update the given pool's IRIS allocation point and deposit fee. Can only be called by the owner.
@@ -133,6 +143,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
         totalAllocPoint = totalAllocPoint.sub(poolInfo[_pid].allocPoint).add(_allocPoint);
         poolInfo[_pid].allocPoint = _allocPoint;
         poolInfo[_pid].depositFeeBP = _depositFeeBP;
+	emit PoolSet(msg.sender, poolInfo[_pid].lpToken, _allocPoint,poolInfo[_pid].lastRewardBlock,_depositFeeBP);
     }
 
     // Return reward multiplier over the given _from to _to block.
@@ -147,11 +158,10 @@ contract MasterChef is Ownable, ReentrancyGuard {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][_user];
         uint256 accIrisPerShare = pool.accIrisPerShare;
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
-        if (block.number > pool.lastRewardBlock && lpSupply != 0) {
+        if (block.number > pool.lastRewardBlock && pool.lpSupply != 0 && totalAllocPoint > 0) {
             uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
             uint256 irisReward = multiplier.mul(irisPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-            accIrisPerShare = accIrisPerShare.add(irisReward.mul(1e18).div(lpSupply));
+            accIrisPerShare = accIrisPerShare.add(irisReward.mul(1e18).div(pool.lpSupply));
         }
         return user.amount.mul(accIrisPerShare).div(1e18).sub(user.rewardDebt);
     }
@@ -170,21 +180,24 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (block.number <= pool.lastRewardBlock) {
             return;
         }
-        uint256 lpSupply = pool.lpToken.balanceOf(address(this));
-        if (lpSupply == 0 || pool.allocPoint == 0) {
+        if (pool.lpSupply == 0 || pool.allocPoint == 0) {
             pool.lastRewardBlock = block.number;
             return;
         }
         uint256 multiplier = getMultiplier(pool.lastRewardBlock, block.number);
         uint256 irisReward = multiplier.mul(irisPerBlock).mul(pool.allocPoint).div(totalAllocPoint);
-        iris.mint(devAddress, irisReward.div(5));
-        iris.mint(address(this), irisReward);
-        pool.accIrisPerShare = pool.accIrisPerShare.add(irisReward.mul(1e18).div(lpSupply));
+	if(iris.totalSupply().add(irisReward.mul(105).div(100)) <= max_iris_supply){
+	  iris.mint(devAddress, irisReward.div(20));
+	  iris.mint(address(this), irisReward);
+	}else if(iris.totalSupply() < max_iris_supply){
+	  iris.mint(address(this), max_iris_supply.sub(iris.totalSupply()));
+	}
+        pool.accIrisPerShare = pool.accIrisPerShare.add(irisReward.mul(1e18).div(pool.lpSupply));
         pool.lastRewardBlock = block.number;
     }
 
     // Deposit LP tokens to MasterChef for IRIS allocation.
-    function deposit(uint256 _pid, uint256 _amount, address _referrer) public nonReentrant {
+    function deposit(uint256 _pid, uint256 _amount, address _referrer) nonReentrant external {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         updatePool(_pid);
@@ -199,13 +212,18 @@ contract MasterChef is Ownable, ReentrancyGuard {
             }
         }
         if (_amount > 0) {
+	    uint256 balanceBefore = pool.lpToken.balanceOf(address(this));
             pool.lpToken.safeTransferFrom(address(msg.sender), address(this), _amount);
+	    _amount = pool.lpToken.balanceOf(address(this)).sub(balanceBefore);
+	    require(_amount > 0, "we dont accept deposits of 0");
             if (pool.depositFeeBP > 0) {
                 uint256 depositFee = _amount.mul(pool.depositFeeBP).div(10000);
                 pool.lpToken.safeTransfer(feeAddress, depositFee);
                 user.amount = user.amount.add(_amount).sub(depositFee);
+		pool.lpSupply = pool.lpSupply.add(_amount).sub(depositFee);
             } else {
                 user.amount = user.amount.add(_amount);
+		pool.lpSupply = pool.lpSupply.add(_amount);
             }
         }
         user.rewardDebt = user.amount.mul(pool.accIrisPerShare).div(1e18);
@@ -213,7 +231,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     }
 
     // Withdraw LP tokens from MasterChef.
-    function withdraw(uint256 _pid, uint256 _amount) public nonReentrant {
+    function withdraw(uint256 _pid, uint256 _amount) nonReentrant external {
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
@@ -226,16 +244,18 @@ contract MasterChef is Ownable, ReentrancyGuard {
         if (_amount > 0) {
             user.amount = user.amount.sub(_amount);
             pool.lpToken.safeTransfer(address(msg.sender), _amount);
+	    pool.lpSupply = pool.lpSupply.sub(_amount);
         }
         user.rewardDebt = user.amount.mul(pool.accIrisPerShare).div(1e18);
         emit Withdraw(msg.sender, _pid, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public nonReentrant {
+    function emergencyWithdraw(uint256 _pid) nonReentrant external{
         PoolInfo storage pool = poolInfo[_pid];
         UserInfo storage user = userInfo[_pid][msg.sender];
         uint256 amount = user.amount;
+	pool.lpSupply = pool.lpSupply.sub(user.amount);
         user.amount = 0;
         user.rewardDebt = 0;
         pool.lpToken.safeTransfer(address(msg.sender), amount);
@@ -256,16 +276,19 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     // Update dev address by the previous dev.
     function setDevAddress(address _devAddress) external onlyOwner {
+	require(_devAddress != address(0), "!nonzero");
         devAddress = _devAddress;
         emit SetDevAddress(msg.sender, _devAddress);
     }
 
     function setFeeAddress(address _feeAddress) external onlyOwner {
+	require(_feeAddress != address(0), "!nonzero");
         feeAddress = _feeAddress;
         emit SetFeeAddress(msg.sender, _feeAddress);
     }
 
     function updateEmissionRate(uint256 _irisPerBlock) external onlyOwner {
+        require(_irisPerBlock <= MAXIMUM_EMISSION_RATE, "Too High");
         massUpdatePools();
         irisPerBlock = _irisPerBlock;
         emit UpdateEmissionRate(msg.sender, _irisPerBlock);
@@ -273,7 +296,9 @@ contract MasterChef is Ownable, ReentrancyGuard {
 
     // Update the referral contract address by the owner
     function setReferralAddress(IReferral _referral) external onlyOwner {
+	require(updateReferralAddress == false, "The Referral contract address is changed already");
         referral = _referral;
+	updateReferralAddress = true;
         emit SetReferralAddress(msg.sender, _referral);
     }
 
@@ -281,6 +306,7 @@ contract MasterChef is Ownable, ReentrancyGuard {
     function setReferralCommissionRate(uint16 _referralCommissionRate) external onlyOwner {
         require(_referralCommissionRate <= MAXIMUM_REFERRAL_COMMISSION_RATE, "setReferralCommissionRate: invalid referral commission rate basis points");
         referralCommissionRate = _referralCommissionRate;
+	emit SetReferralCommissionRate(msg.sender, _referralCommissionRate);
     }
 
     // Pay referral commission to the referrer who referred this user.
@@ -290,14 +316,25 @@ contract MasterChef is Ownable, ReentrancyGuard {
             uint256 commissionAmount = _pending.mul(referralCommissionRate).div(10000);
 
             if (referrer != address(0) && commissionAmount > 0) {
-                iris.mint(referrer, commissionAmount);
+		if(iris.totalSupply().add(commissionAmount) <= max_iris_supply){
+		  iris.mint(referrer, commissionAmount);
+		}else if(iris.totalSupply() < max_iris_supply) {
+		  iris.mint(address(this), max_iris_supply.sub(iris.totalSupply()));
+		}
                 emit ReferralCommissionPaid(_user, referrer, commissionAmount);
             }
         }
     }
 
     // Only update before start of farm
-    function updateStartBlock(uint256 _startBlock) public onlyOwner {
+    function updateStartBlock(uint256 _startBlock) onlyOwner external{
+	require(startBlock > block.number, "Farm already started");
+	uint256 length = poolInfo.length;
+	for(uint256 pid = 0; pid < length; ++pid){
+		PoolInfo storage pool = poolInfo[pid];
+		pool.lastRewardBlock = _startBlock;
+	}
         startBlock = _startBlock;
+	emit UpdateStartBlock(msg.sender, _startBlock);
     }
 }

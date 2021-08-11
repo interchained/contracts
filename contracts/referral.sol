@@ -17,6 +17,8 @@ import "./libs/IReferral.sol";
 contract Referral is IReferral, Ownable {
     using SafeERC20 for IERC20;
 
+    bool isOperatorUpdated = false;
+
     mapping(address => bool) public operators;
     mapping(address => address) public referrers; // user address => referrer address
     mapping(address => uint256) public referralsCount; // referrer address => referrals count
@@ -29,7 +31,7 @@ contract Referral is IReferral, Ownable {
         _;
     }
 
-    function recordReferral(address _user, address _referrer) public override onlyOperator {
+    function recordReferral(address _user, address _referrer) override onlyOperator external {
         if (_user != address(0)
             && _referrer != address(0)
             && _user != _referrer
@@ -48,6 +50,8 @@ contract Referral is IReferral, Ownable {
 
     // Update the status of the operator
     function updateOperator(address _operator, bool _status) external onlyOwner {
+	require(isOperatorUpdated == false, "Operator can be updated once");
+	isOperatorUpdated = true;
         operators[_operator] = _status;
         emit OperatorUpdated(_operator, _status);
     }
